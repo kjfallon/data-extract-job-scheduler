@@ -1,0 +1,17 @@
+[Unit]
+Description=extract-publisher Spring Boot service
+After=networking.service
+
+[Service]
+User=extract-service
+Environment=JAVA_HOME=/opt/java
+EnvironmentFile=/opt/extract-publisher/app_env_credentials.sh
+ExecStart=/opt/extract-publisher/data-extract-job-scheduler-1.0.jar
+SuccessExitStatus=143
+WorkingDirectory=/opt/extract-publisher/
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=extract-publisher
+
+[Install]
+WantedBy=multi-user.target

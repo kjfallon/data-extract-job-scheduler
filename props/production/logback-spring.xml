@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <appender name="CONSOLE"
+              class="ch.qos.logback.core.ConsoleAppender">
+        <layout class="ch.qos.logback.classic.PatternLayout">
+            <Pattern>%date{ISO8601} [%thread] %-5level %logger{36} - %msg%n</Pattern>
+        </layout>
+    </appender>
+
+    <appender name="FILE"
+              class="ch.qos.logback.core.FileAppender">
+        <file>/var/log/extract-publisher/extract-publisher.log</file>
+        <append>true</append>
+        <immediateFlush>true</immediateFlush>
+        <encoder>
+            <pattern>%date{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="SYSLOG"
+              class="ch.qos.logback.classic.net.SyslogAppender">
+        <syslogHost>syslog.example.org</syslogHost>
+        <port>514</port>
+        <facility>LOCAL0</facility>
+    </appender>
+
+    <logger name="org.example.extractpublisher" level="INFO" additivity="false">
+        <appender-ref ref="FILE" />
+    </logger>
+    <logger name="org.springframework" level="INFO" additivity="false">
+        <appender-ref ref="FILE" />
+    </logger>
+    <logger name="org.springframework.integration" level="INFO" additivity="false">
+        <appender-ref ref="FILE" />
+    </logger>
+    <logger name="org.springframework.cloud.stream" level="WARN" additivity="false">
+        <appender-ref ref="FILE" />
+    </logger>
+    <logger name="com.ulisesbocchio" level="WARN" additivity="false">
+        <appender-ref ref="FILE" />
+    </logger>
+
+    <!-- default logging at INFO level to file -->
+    <root level="info">
+        <appender-ref ref="FILE" />
+    </root>
+
+</configuration>

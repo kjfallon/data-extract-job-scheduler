@@ -1,0 +1,124 @@
+### BEGIN INIT INFO
+# Provides: extract-publisher
+# chkconfig: 2345 80 30
+# Required-Start: $local_fs $network $remote_fs
+# Required-Stop: $local_fs $network $remote_fs
+# Default-Start: 2 3 4 5
+# Default-Stop: 0 1 6
+# Short-Description: start and stop extract-publisher
+# Description: extract-publisher extracts batch data from  and provides it to client systems
+### END INIT INFO
+
+# Source function integration3.
+[ -f "/etc/rc.d/init.d/functions" ] && . /etc/rc.d/init.d/functions
+[ -z "$JAVA_HOME" -a -x /etc/profile.d/java.sh ] && . /etc/profile.d/java.sh
+
+JAVA_HOME=/opt/java
+CLASS_PATH="/opt/extract-publisher/data-extract-job-scheduler-1.0.jar":"/opt/extract-publisher"
+
+# load private environment variable credentials
+if [ -r "/opt/extract-publisher/app_env_credentials.sh" ]; then
+  . "/opt/extract-publisher/app_env_credentials.sh"
+fi
+
+# the name of the project, will also be used for the war file, log file, ...
+PROJECT_NAME=data-extract-job-scheduler
+
+# the user which should run the service
+SERVICE_USER=extract-service
+
+# base directory for the spring boot jar
+SPRINGBOOTAPP_HOME=/opt/extract-publisher
+export SPRINGBOOTAPP_HOME
+
+# the spring boot war-file
+SPRINGBOOTAPP_JAR="$SPRINGBOOTAPP_HOME/$PROJECT_NAME-1.0.jar"
+
+# java executable for spring boot app, change if you have multiple jdks installed
+SPRINGBOOTAPP_JAVA=$JAVA_HOME/bin/java
+
+# spring boot log-file
+LOG="/var/log/extract-publisher/extract-publisher_console.log"
+
+LOCK="/var/lock/subsys/$PROJECT_NAME"
+
+RETVAL=0
+
+pid_of_spring_boot() {
+    pgrep -f "java.*extract-publisher org.springframework.boot.loader.JarLauncher"
+}
+
+start() {
+    [ -e "$LOG" ] && cnt=`wc -l "$LOG" | awk '{ print $1 }'` || cnt=1
+
+    echo -n $"Starting $PROJECT_NAME: "
+
+    cd "$SPRINGBOOTAPP_HOME"
+    su $SERVICE_USER -c "nohup $SPRINGBOOTAPP_JAVA -Xmx128M -cp $CLASS_PATH org.springframework.boot.loader.JarLauncher >> \"$LOG\" 2>&1 &"
+
+    #while { pid_of_spring_boot > /dev/null ; } &&
+    #    ! { tail --lines=+$cnt "$LOG" | grep -q ' Started \S+ in' ; } ; do
+        sleep 3
+    #done
+
+    pid_of_spring_boot > /dev/null
+    RETVAL=$?
+    [ $RETVAL = 0 ] && success $"$STRING" || failure $"$STRING"
+    echo
+
+    [ $RETVAL = 0 ] && touch "$LOCK"
+}
+
+stop() {
+    echo -n "Stopping $PROJECT_NAME: "
+
+    pid=`pid_of_spring_boot`
+    [ -n "$pid" ] && kill $pid
+    RETVAL=$?
+    cnt=10
+    while [ $RETVAL = 0 -a $cnt -gt 0 ] &&
+        { pid_of_spring_boot > /dev/null ; } ; do
+            sleep 1
+            ((cnt--))
+    done
+
+    [ $RETVAL = 0 ] && rm -f "$LOCK"
+    [ $RETVAL = 0 ] && success $"$STRING" || failure $"$STRING"
+    echo
+}
+
+status() {
+    pid=`pid_of_spring_boot`
+    if [ -n "$pid" ]; then
+        echo "$PROJECT_NAME pid $pid is running..."
+        return 0
+    fi
+    if [ -f "$LOCK" ]; then
+        echo $"${base} dead but subsys locked"
+        return 2
+    fi
+    echo "$PROJECT_NAME is stopped"
+    return 3
+}
+
+# See how we were called.
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    status)
+        status
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo $"Usage: $0 {start|stop|restart|status}"
+        exit 1
+esac
+
+exit $RETVAL
