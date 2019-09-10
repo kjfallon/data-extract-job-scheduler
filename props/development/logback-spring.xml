@@ -25,6 +25,11 @@
         <facility>LOCAL0</facility>
     </appender>
 
+    <logger name="org.example.extractpublisher.services.AuditLogger" level="INFO" additivity="false">
+        <appender-ref ref="SYSLOG" />
+        <appender-ref ref="FILE" />
+    </logger>
+
     <logger name="org.example.extractpublisher" level="INFO" additivity="false">
         <appender-ref ref="FILE" />
     </logger>

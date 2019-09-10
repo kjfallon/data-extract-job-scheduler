@@ -1,10 +1,18 @@
 package org.example.extractpublisher.jobs;
 
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 import org.example.extractpublisher.components.JwtUtils;
-import io.jsonwebtoken.*;
+import org.example.extractpublisher.entities.JwtMessage;
+
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.Scheduled;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Slf4j
 @Configuration
@@ -13,34 +21,36 @@ public class TestJws {
     @Autowired
     JwtUtils jwtUtils;
 
+    @Value("${java.keystore.private.key.alias}")
+    private String privateKeyAlias;
+
     // scheduled to run every 1 minutes
-    //@Scheduled(cron="0 */1 * * * ?")
+    @Scheduled(cron="0 */1 * * * ?")
     public void run() {
 
-        log.info("Creating signed JWT...");
-        String signingKeyId = "extract-publisher-application";
+        // Create
+        log.info("Creating JWE");
+        String signingKeyId = privateKeyAlias;
+        String recipientKeyId = privateKeyAlias;
         Integer minutesUntilExpiry = 10;
         String issuer = signingKeyId;
         String subject = "ThisIsTheSubject";
-        String audience = "Extract-Publisher";
-        // custom claims
-        Claims claims = Jwts.claims();
-        claims.put("command", "something");
+        List<String> audienceList = new ArrayList<String>();
+        audienceList.add("Extract-Publisher");
+        List<Pair<String, Object>> customClaimList = new ArrayList<Pair<String, Object>>();
+        Pair<String, Object> customClaim = new ImmutablePair<>("command","no-op");
+        customClaimList.add(customClaim);
+        String jwe = jwtUtils.createSignedJweWithCustomClaims(issuer, subject, audienceList, signingKeyId, recipientKeyId, minutesUntilExpiry, customClaimList);
 
-        String jws = jwtUtils.createRsaSignedJwtWithClaims(issuer, subject, audience, signingKeyId, minutesUntilExpiry, claims);
-
-        validateJwsSignature(jws);
-        validateJwsAndDisplay(jws);
+        // Validate
+        log.info("Validating JWE");
+        JwtMessage jwtMessage = jwtUtils.readJwtMessageFromJwe(jwe,"");
+        log.info("JWS signature valid? : " + jwtMessage.getSignatureValid());
+        jwtUtils.printJwsHeader(jwtMessage.getHeader());
+        jwtUtils.printClaims(jwtMessage.getClaims());
 
     }
 
-    private void validateJwsAndDisplay(String jws) {
-        jwtUtils.printJwsHeader(jwtUtils.readHeaderFromJws(jws, ""));
-        jwtUtils.printClaims(jwtUtils.readClaimsFromJws(jws, ""));
-    }
 
-    private void validateJwsSignature(String jws) {
-        log.info("signature is valid? " + jwtUtils.validateSignature(jws,""));
-    }
 
 }

@@ -1,11 +1,16 @@
 package org.example.extractpublisher.components;
 
+import com.nimbusds.jose.*;
+import com.nimbusds.jose.crypto.RSADecrypter;
+import com.nimbusds.jose.crypto.RSAEncrypter;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.crypto.RSASSAVerifier;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.example.extractpublisher.entities.JwtMessage;
-import io.jsonwebtoken.*;
 
-import io.jsonwebtoken.SignatureException;
-import io.jsonwebtoken.io.DecodingException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,17 +23,17 @@ import java.io.IOException;
 import java.security.*;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateException;
+import java.security.interfaces.RSAPublicKey;
+import java.text.ParseException;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @Component
 public class JwtUtils {
 
-    @Autowired
-    JwtSigningKeyResolver signingKeyResolver;
-    @Autowired
-    JwtNullSigningKeyResolver nullSigningKeyResolver;
     @Autowired
     HttpUtils httpUtils;
 
@@ -42,6 +47,8 @@ public class JwtUtils {
     private Boolean keystoreFetchRemote;
     @Value("${java.keystore.remote.source}")
     private String keystoreRemoteSource;
+    @Value("${java.keystore.private.key.alias}")
+    private String privateKeyAlias;
 
     KeyStore keystore = null;
 
@@ -54,16 +61,7 @@ public class JwtUtils {
                 try {
                     keystore = KeyStore.getInstance("PKCS12");
                     keystore.load(inputStream, keystorePassword.toCharArray());
-                } catch (KeyStoreException e) {
-                    log.error(e.toString());
-                    e.printStackTrace();
-                } catch (CertificateException e) {
-                    log.error(e.toString());
-                    e.printStackTrace();
-                } catch (NoSuchAlgorithmException e) {
-                    log.error(e.toString());
-                    e.printStackTrace();
-                } catch (IOException e) {
+                } catch (Exception e) {
                     log.error(e.toString());
                     e.printStackTrace();
                 }
@@ -73,16 +71,7 @@ public class JwtUtils {
                 try {
                     keystore = KeyStore.getInstance("PKCS12");
                     keystore.load(resource.getInputStream(), keystorePassword.toCharArray());
-                } catch (KeyStoreException e) {
-                    log.error(e.toString());
-                    e.printStackTrace();
-                } catch (CertificateException e) {
-                    log.error(e.toString());
-                    e.printStackTrace();
-                } catch (NoSuchAlgorithmException e) {
-                    log.error(e.toString());
-                    e.printStackTrace();
-                } catch (IOException e) {
+                } catch (Exception e) {
                     log.error(e.toString());
                     e.printStackTrace();
                 }
@@ -94,51 +83,67 @@ public class JwtUtils {
         return keystore;
     }
 
-    public String createRsaSignedJwtWithClaims(String issuer,
-                                               String subject,
-                                               String audience,
-                                               String signingKeyAlias,
-                                               Integer minutesUntilExpiry,
-                                               Claims claims) {
+    // This creates a JWS signed with the producer's private key which is then encrypted to recipients's public key
+    // as the payload in a JWE
+    public String createSignedJweWithCustomClaims(String issuer,
+                                                  String subject,
+                                                  List<String> audience,
+                                                  String signingKeyAlias,
+                                                  String recipientKeyAlias,
+                                                  Integer minutesUntilExpiry,
+                                                  List<Pair<String, Object>> claimList) {
 
-        String jws = "";
+        String jweString = "";
+        Date now = new Date();
 
-        // Add any extra claims
-        claims.put("user", "TEST-API");
-
-        Key privateKey = getPrivateKeyFromKeystoreByAlias(signingKeyAlias);
-        JwtBuilder builder = Jwts.builder()
-                .setHeaderParam("kid", signingKeyAlias)
-                .setClaims(claims)
-                .setIssuedAt(new Date())
-                .signWith(privateKey, SignatureAlgorithm.RS512);
-
-        builder.setNotBefore(new Date());
-        if (minutesUntilExpiry > 0) {
-            builder.setExpiration(new Date(System.currentTimeMillis() + (minutesUntilExpiry * 60000)));
+        JWTClaimsSet.Builder jwtBuilder = new JWTClaimsSet.Builder();
+        jwtBuilder.issuer(issuer);
+        jwtBuilder.subject(subject);
+        jwtBuilder.audience(audience);
+        jwtBuilder.expirationTime(new Date(now.getTime()  + (1000 * 60 * minutesUntilExpiry)));
+        jwtBuilder.notBeforeTime(now);
+        jwtBuilder.issueTime(now);
+        jwtBuilder.jwtID(UUID.randomUUID().toString());
+        for(Pair<String, Object> claim : claimList) {
+            jwtBuilder.claim(claim.getKey(), claim.getValue());
         }
-        if (StringUtils.isNotEmpty(issuer)) {
-            builder.setIssuer(issuer);
-        }
-        if (StringUtils.isNotEmpty(subject)) {
-            builder.setSubject(subject);
-        }
-        if (StringUtils.isNotEmpty(audience)) {
-            builder.setAudience(audience);
-        }
+        JWTClaimsSet jwtClaims = jwtBuilder.build();
 
-        // create JWT string from builder
+        // specify the id (kid) of the signing key in the header so it may be validated by recipient
+        JWSHeader jwsHeader = new JWSHeader.Builder(JWSAlgorithm.RS512).keyID(signingKeyAlias).build();
+
+        SignedJWT signedJWT = new SignedJWT(jwsHeader, jwtClaims);
+        PrivateKey privateKey = (PrivateKey)getPrivateKeyFromKeystoreByAlias(signingKeyAlias);
         try {
-            jws = builder.compact();
-        }
-        catch (JwtException e) {
-            log.error("Unable to create JWT");
+            signedJWT.sign(new RSASSASigner(privateKey));
+        } catch (JOSEException e) {
             log.error(e.toString());
             e.printStackTrace();
+            return jweString;
         }
-        log.info("Created JWT: " + jws);
 
-        return jws;
+        // Create JWE object with signed JWT as payload
+        JWEObject jweObject = new JWEObject(
+                new JWEHeader.Builder(JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A256GCM)
+                        .contentType("JWT") // required to indicate nested JWT
+                        .build(),
+                new Payload(signedJWT));
+
+        // Encrypt to the recipient's public key
+        RSAPublicKey recipientPublicKey = (RSAPublicKey)getPublicKeyFromKeystoreByAlias(recipientKeyAlias);
+        try {
+            jweObject.encrypt(new RSAEncrypter(recipientPublicKey));
+        } catch (JOSEException e) {
+            log.error(e.toString());
+            e.printStackTrace();
+            return jweString;
+        }
+
+        // Serialise to JWE compact form
+        jweString = jweObject.serialize();
+        log.info("Created JWE: " + jweString);
+
+        return jweString;
     }
 
     public PublicKey getPublicKeyFromKeystoreByAlias(String alias) {
@@ -160,7 +165,6 @@ public class JwtUtils {
         }
 
         return publicKey;
-
     }
 
     public Key getPrivateKeyFromKeystoreByAlias(String keyAlias) {
@@ -171,248 +175,152 @@ public class JwtUtils {
         try {
             privateKey = getKeystore().getKey(keyAlias, privatekeyPassword.toCharArray());
         }
-        catch (NoSuchAlgorithmException e) {
-            log.error(e.toString());
-            e.printStackTrace();
-        } catch (UnrecoverableKeyException e) {
-            log.error(e.toString());
-            e.printStackTrace();
-        } catch (KeyStoreException e) {
+        catch (Exception e) {
             log.error(e.toString());
             e.printStackTrace();
         }
 
         return privateKey;
-
     }
 
-    public Boolean validateSignature(String jws, String signingKeyAlias){
+    public Boolean validateJwsSignature(SignedJWT signedJWT, String signingKeyAlias){
         Boolean trust = false;
 
+        // Validate jws with specified key or default to kid from header
+        if (StringUtils.isEmpty(signingKeyAlias)) signingKeyAlias = signedJWT.getHeader().getKeyID();
+
         if (StringUtils.isNotEmpty(signingKeyAlias)) {
-            PublicKey publicKey = getPublicKeyFromKeystoreByAlias(signingKeyAlias);
+            RSAPublicKey signingPublicKey = (RSAPublicKey)getPublicKeyFromKeystoreByAlias(signingKeyAlias);
             try {
-                Jwts.parser().setSigningKey(publicKey).parse(jws);
-                trust = true;
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
-                log.error(e.toString());
-                e.printStackTrace();
-            }
-        }
-        else {
-            try {
-                Jwts.parser().setSigningKeyResolver(signingKeyResolver).parse(jws);
-                trust = true;
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
+                trust = signedJWT.verify(new RSASSAVerifier(signingPublicKey));
+            } catch (JOSEException e) {
                 log.error(e.toString());
                 e.printStackTrace();
             }
         }
 
-        if (!trust) log.error("Unable to verify signature");
+        if (!trust) log.warn("Unable to verify signature");
         return trust;
     }
 
-    public Claims readClaimsFromJws(String jws, String signingKeyAlias) {
-        Claims claims = null;
+    public JWTClaimsSet validateJwsSignatureAndReadClaimsFrom(SignedJWT signedJWT, String signingKeyAlias) {
+        JWTClaimsSet claims = null;
 
-        if (StringUtils.isNotEmpty(signingKeyAlias)) {
-            PublicKey publicKey = getPublicKeyFromKeystoreByAlias(signingKeyAlias);
+        Boolean trust = validateJwsSignature(signedJWT, signingKeyAlias);
+        if (trust) {
             try {
-                claims = Jwts.parser().setSigningKey(publicKey).parseClaimsJws(jws).getBody();
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
+                claims = signedJWT.getJWTClaimsSet();
+                log.info("Parsed claims from JWS");
+            } catch (ParseException e) {
+                log.info("Unable to parse claims from JWS");
                 log.error(e.toString());
                 e.printStackTrace();
             }
         }
         else {
-            try {
-                claims = Jwts.parser().setSigningKeyResolver(signingKeyResolver).parseClaimsJws(jws).getBody();
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
-                log.error(e.toString());
-                e.printStackTrace();
-            }
+            log.warn("Unable to verify signature");
         }
         return claims;
     }
 
-    public JwtMessage readJwtMessageFromJws(String jws, String signingKeyAlias) {
+    public SignedJWT decryptJwsFromJwe(String jweString, String recipientKeyAlias) {
+
+        JWEObject jweObject = null;
+        SignedJWT signedJWT = null;
+        try {
+            jweObject = JWEObject.parse(jweString);
+        } catch (ParseException e) {
+            log.warn("Unable to parse JWE from string");
+            log.warn(e.toString());
+            e.printStackTrace();
+            return signedJWT;
+        }
+
+        // Decrypt with private key
+        PrivateKey privateKey = (PrivateKey)getPrivateKeyFromKeystoreByAlias(recipientKeyAlias);
+        if (privateKey == null) {
+            log.warn("Unable to load private key from keystore: " + recipientKeyAlias);
+            return signedJWT;
+        }
+        try {
+            jweObject.decrypt(new RSADecrypter(privateKey));
+        } catch (JOSEException e) {
+            log.warn("Unable to decrypt JWE with recipientKeyAlias: " + recipientKeyAlias);
+            log.warn(e.toString());
+            e.printStackTrace();
+            return signedJWT;
+        }
+
+        // Extract payload
+        signedJWT = jweObject.getPayload().toSignedJWT();
+
+        return signedJWT;
+    }
+
+    public JwtMessage readJwtMessageFromJwe(String jweString, String signingKeyAlias) {
+
+        // first decrypt the JWS from the JWE
+        SignedJWT signedJWT = decryptJwsFromJwe(jweString, privateKeyAlias);
+
+        // second parse the JWS
+        return readJwtMessageFromJws(signedJWT, signingKeyAlias);
+    }
+
+    public JwtMessage readJwtMessageFromJws(SignedJWT signedJWT, String signingKeyAlias) {
 
         JwtMessage jwtMessage = new JwtMessage();
-        Claims claims = null;
-        JwsHeader header = null;
 
-        if (StringUtils.isNotEmpty(signingKeyAlias)) {
-            PublicKey publicKey = getPublicKeyFromKeystoreByAlias(signingKeyAlias);
-            try {
-                claims = Jwts.parser().setSigningKey(publicKey).parseClaimsJws(jws).getBody();
-                header = Jwts.parser().setSigningKey(publicKey).parseClaimsJws(jws).getHeader();
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
-                log.error(e.toString());
-                e.printStackTrace();
-            }
+        if (signedJWT == null) {
+            log.warn("readJwtMessageFromJws received null signedJWT so returning empty jwtMessage");
+            return jwtMessage;
         }
-        else {
-            try {
-                claims = Jwts.parser().setSigningKeyResolver(signingKeyResolver).parseClaimsJws(jws).getBody();
-                header = Jwts.parser().setSigningKeyResolver(signingKeyResolver).parseClaimsJws(jws).getHeader();
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            } catch(Exception e) {
-                log.error(e.toString());
-                e.printStackTrace();
-            }
-        }
+        JWSHeader header = signedJWT.getHeader();
+        JWTClaimsSet claims = null;
 
+        try {
+            claims = signedJWT.getJWTClaimsSet();
+        } catch (ParseException e) {
+            log.info("Unable to parse claims from JWS");
+            log.error(e.toString());
+            e.printStackTrace();
+        }
         if (claims != null) {
-            jwtMessage.setSignatureValid(true);
-            jwtMessage.setJws(jws);
+            jwtMessage.setSignatureValid(validateJwsSignature(signedJWT, signingKeyAlias));
+            jwtMessage.setJws(signedJWT.serialize());
             jwtMessage.setHeader(header);
             jwtMessage.setAlgorithm(header.getAlgorithm());
-            jwtMessage.setKeyId(header.getKeyId());
+            jwtMessage.setKeyId(header.getKeyID());
             jwtMessage.setClaims(claims);
             jwtMessage.setIssuer(claims.getIssuer());
             jwtMessage.setSubject(claims.getSubject());
             jwtMessage.setAudience(claims.getAudience());
-            jwtMessage.setExpiration(claims.getExpiration());
-            jwtMessage.setNotBefore(claims.getNotBefore());
-            jwtMessage.setIssuedAt(claims.getIssuedAt());
-            jwtMessage.setId(claims.getId());
-            jwtMessage.setCommand((String) claims.get("command"));
+            jwtMessage.setExpiration(claims.getExpirationTime());
+            jwtMessage.setNotBefore(claims.getNotBeforeTime());
+            jwtMessage.setIssuedAt(claims.getIssueTime());
+            jwtMessage.setId(claims.getJWTID());
+            jwtMessage.setCommand((String) claims.getClaims().get("command"));
         }
+
         return jwtMessage;
     }
 
-    public JwsHeader readHeaderFromJws(String jws, String signingKeyAlias) {
-        JwsHeader header = null;
-
-        if (StringUtils.isNotEmpty(signingKeyAlias)) {
-            PublicKey publicKey = getPublicKeyFromKeystoreByAlias(signingKeyAlias);
-            try {
-                header = Jwts.parser().setSigningKey(publicKey).parseClaimsJws(jws).getHeader();
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
-                log.error(e.toString());
-                e.printStackTrace();
-            }
-        }
-        else {
-            try {
-                header = Jwts.parser().setSigningKeyResolver(signingKeyResolver).parseClaimsJws(jws).getHeader();
-            } catch (DecodingException e) {
-                log.error("error base64 decoding JWT");
-                log.error(e.toString());
-            } catch (ExpiredJwtException e) {
-                log.error("jwt has expired");
-                log.error(e.toString());
-            } catch (JwtException e) {
-                log.error("jwt exception");
-                e.printStackTrace();
-            } catch(IllegalArgumentException e) {
-                log.error(e.toString());
-            }catch(Exception e) {
-                log.error(e.toString());
-                e.printStackTrace();
-            }
-        }
-        return header;
-    }
-
-    public void printJwsHeader(JwsHeader header) {
+    public void printJwsHeader(JWSHeader header) {
         if (header == null) {
             log.error("header object is null");
-        } else if (header.size() == 0) {
-            log.warn("header is empty");
         } else {
             log.info("header:");
             log.info("--algo: " + header.getAlgorithm());
-            log.info("--keyid: " + header.getKeyId());
+            log.info("--keyid: " + header.getKeyID());
         }
     }
 
-    public void printClaims(Claims claims) {
+    public void printClaims(JWTClaimsSet claims) {
         if (claims == null) {
             log.error("claims object is null");
-        } else if (claims.size() == 0) {
-            log.warn("claims are empty");
-        } else {
+        }else {
             log.info("claims:");
-            for (Map.Entry<String, Object> claim : claims.entrySet()) {
-                log.info("--claim (" + claim.getKey() + " : " + claim.getValue() + ")");
+            for(String claimKey : claims.getClaims().keySet()) {
+                log.info("--claim (" + claimKey + " : " + claims.getClaims().get(claimKey) + ")");
             }
         }
     }

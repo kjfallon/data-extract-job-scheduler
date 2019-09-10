@@ -4,30 +4,29 @@
   extracts from backend enterprise systems and then SFTP those extracts to remote internal or external integration 
   partners.  Data is compressed with gzip and then transferred over an encrypted channel to pre-defined remote systems 
   using either public key or passphrase authentication.  This service additionally listens to a [RabbitMQ](https://www.rabbitmq.com/) 
-  AMQP exchange where the receipt of JSON Web Token ([JWT](https://en.wikipedia.org/wiki/JSON_Web_Token)) messages which
-  are RS512 signed by an authorizing party will trigger on-demand data extract jobs.  In the use case this was 
+  AMQP exchange where the receipt of JSON Web Token ([JWT](https://en.wikipedia.org/wiki/JSON_Web_Token)) messages ([RS512](https://tools.ietf.org/html/rfc7518#section-3.3)
+  signed and [AES256GCM](https://tools.ietf.org/html/rfc7518#section-4.7) encrypted) will trigger on-demand data extract jobs.  In the use case this was 
   designed for the remote integration partners have access to an API where they can POST data extract requests.  This 
-  API in turn issues JWS messages over the AMQP event bus which are then serviced by this application.  This application
+  API in turn issues JWE messages over the AMQP event bus which are then serviced by this application.  This application
   is authored in Java using the [Spring Framework](https://spring.io/projects/spring-framework).
   
 ![Diagram](extract_publisher_diagram.png)
   
-  On each job completion an AMQP notification status message will be sent to the Exchange you specify in the property 
-  file.  In addition, email notfications on either/both success/failure may sent as specified in the application 
-  property file.
+  On each job completion an AMQP event notice message will be sent to the Exchange you specify in the property 
+  file.  In addition, email notifications on either/both success/failure may sent as specified in the application 
+  property file. [Logback](https://logback.qos.ch/) is used to create a local application log file as well as log audit 
+  events directly via Syslog to a remote central logging system.
   
   The [Bucket4j](https://github.com/vladimir-bukhtoyarov/bucket4j) implementation of the [token bucket algorithm](https://en.wikipedia.org/wiki/Token_bucket)
   is used to rate limit on-demand job execution so that an integration partner may not trigger export jobs at a rate
-  that is faster or more frequent than you prefer.
+  that is faster or more frequent than you prefer. The [Nimbus JOSE + JWT](https://connect2id.com/products/nimbus-jose-jwt)
+  implementation of JWT, JWS, and JWE was used to provide signed and encrypted JSON messaging.
    
-  This application uses a ssh known_hosts file to prevent [MITM](https://en.wikipedia.org/wiki/Man-in-the-middle_attack)
-  attacks on SFTP data transfer.  This mechanism requires the remote host to identify itself before 
-  this application attempts to authentication.  The known_hosts file used is specified in this application's 
-  property file.  You can generate the host keys to place in this file by ssh'ing to integration partner hosts for the first
-  time.  Once you have done that your ssh client will have added the remote host public key to its known_hosts file.
-  You may take the key(s) you will use from there.  Pinning the integration partner host keys in this way will
-  prevent against inadvertent communication with other hosts, but you will need to update the public host key in this
-  application's known_host file if the remote host's private key changes due to intentional replacement or upgrade. 
+  This application uses a distinct ssh known_hosts file per integration partner to prevent [MITM](https://en.wikipedia.org/wiki/Man-in-the-middle_attack)
+  attacks on SFTP data transfer.  The known_hosts files used are specified in this application's property file.  Pinning 
+  the integration partner host keys in this way will prevent against inadvertent communication with other hosts, but you
+  will need to update the public host key in the known_host file for an integration partner if the remote host's 
+  private key changes due to an intentional replacement or upgrade. 
    
   
   Using [Maven](https://maven.apache.org/) this application builds to one jar file, one property file, and one logging 
@@ -122,8 +121,8 @@
 ---
 ## Appendix
 ### [Data transfer] How to create private key pairs for authorization to remote systems for use when SFTP'ing extract files
-This generates two files. One is a public key you may disclose, and the other is a private key you must not disclose.  
-They public key contents are copied into the ssh authorized_keys file on the remote host for the user this
+This generates two files. One is a public key you may disclose, and the other is a private key you must not disclose. 
+The public key contents are copied into the ssh authorized_keys file on the remote host for the user this
 application will be authenticating to.  The private key should be placed in this application's deployment 
 directory as referenced in the property file so that it may be used. 
 ```
@@ -154,7 +153,7 @@ This is for use by the API which will sign JWT and send resulting JWS command me
 ### [Messaging] How to generate a public certificate from the API and add it to the keystore of this application
 This application validates the RS512 signature of JWS command messages received via AMQP.  In order to register the
  API as an trusted signer the steps below may be used to generate a public certificate from the private key pair the API
- will use to sign messages.  This certificate is then added the the keystore used by this application so that it may
+ will use to sign messages.  This certificate is then added to the keystore used by this application so that it may
  be found by alias at runtime. This application's keystore (extract-publisher-keystore.pkcs12) should be placed in this
  application's deployment directory as referenced in the property file so that it may be used. 
     
