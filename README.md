@@ -34,7 +34,7 @@
   you are SFTPing the extract to, the target path on that host, how you are authenticating, the location of your key 
   file, whether or not you would like email notifications, and what email addresses should receive these notifications.
     
-  This application is built using the [Spring Cloud Stream](https://spring.io/projects/spring-cloud-stream) library 
+  This application is written using the [Spring Cloud Stream](https://spring.io/projects/spring-cloud-stream) library 
   which combines [Spring Boot](https://spring.io/projects/spring-boot) and 
   [Spring Integration](https://spring.io/projects/spring-integration).  The Spring Integration library components are
   used to implement SFTP while the String Cloud Stream components are used for AQMP messaging input and output.  No 
