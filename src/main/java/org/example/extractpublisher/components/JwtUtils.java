@@ -274,6 +274,8 @@ public class JwtUtils {
             log.warn("readJwtMessageFromJws received null signedJWT so returning empty jwtMessage");
             return jwtMessage;
         }
+
+        jwtMessage.setSignedJWT(signedJWT);
         JWSHeader header = signedJWT.getHeader();
         JWTClaimsSet claims = null;
 
